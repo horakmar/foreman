@@ -1,0 +1,69 @@
+#cloud-config
+<%#
+kind: provision
+name: CoreOS provision salt
+-%>
+users:
+  - name: "core"
+    passwd: "<%= root_pass %>"
+  - name: "rescue"
+    groups:
+      - "sudo"
+    passwd: "$6$rounds=2048$YFBs27j0j$T4S/Rx79Le8lnk0MgOnW.VULYJzXhlXBgO6hg/inAmFH/kWfUSTa4LyN9r/6jPUJxvlz1G7p7R/oJkYBTkfEi1"
+<% if @host.params['ssh_authorized_keys'] -%>
+ssh_authorized_keys:
+<% @host.params['ssh_authorized_keys'].split(',').map(&:strip).each do |ssh_key| -%>
+  - "<%= ssh_key %>"
+<% end -%>
+<% end -%>
+write_files:
+  - path: "/etc/wgetrc"
+    permissions: "0640"
+    owner: "root"
+    content: |
+      http_proxy = <%= @host.params['proxy']%>
+      https_proxy = <%= @host.params['proxy']%>
+  - path: "/home/core/cloudconfig.yml"
+    permissions: '0600'
+    owner: "core:core"
+    content: |
+<%= indent 6 do snippet 'coreos_cloudconfig_salt' end%>
+coreos:
+  units:
+    - name: "coreos-install.service"
+      command: "start"
+      content: |
+        [Unit]
+        Description=Install coreos to disk
+        [Service]
+        Type=oneshot
+        ExecStartPre=-/usr/bin/sh -c 'echo -e "\n\nStage 1: Download CoreOS image -> Install to disk -> Tweak -> Reboot" >>/etc/issue'
+        ExecStart=+/usr/bin/coreos-install \
+          -V current \
+          -d <%= @host.params['install_disk'] || '/dev/sda' %> \
+          -c /home/core/cloudconfig.yml
+        [X-Fleet]
+        X-Conflicts=coreos-install.service
+    - name: "coreos-tweak.service"
+      command: "start"
+      content: |
+        [Unit]
+        Description=Tweak CoreOS installation
+        Require=coreos-install.service
+        After=coreos-install.service
+        [Service]
+        Type=oneshot
+        ExecStartPre=/usr/bin/mount <%= @host.params['install_disk']%>p9 /mnt
+        ExecStart=/usr/bin/mkdir -p /mnt/etc/modprobe.d /mnt/etc/salt/minion.d
+        ExecStart=/usr/bin/sh -c 'echo "options bonding miimon=500 mode=active-backup" >/mnt/etc/modprobe.d/bonding.conf'
+        ExecStart=/usr/bin/sh -c 'echo "id: <%= @host.name%>" >/mnt/etc/salt/minion.d/id.conf'
+        ExecStart=/usr/bin/sh -c 'echo -e "providers:\n  service: systemd" >/mnt/etc/salt/minion.d/provider.conf'
+        ExecStart=/usr/bin/sh -c 'echo "<%= @host.shortname%>" >/mnt/etc/hostname'
+        ExecStart=/usr/bin/sh -c 'echo -e "[Match]\nName=enp[37]s0\n\n[Network]\nBond=bond0\n" >/mnt/etc/systemd/network/10-en.network'
+        ExecStart=/usr/bin/sh -c 'echo -e "[NetDev]\nName=bond0\nKind=bond\n\n[Bond]\nMode=active-backup\nMIIMonitorSec=500\n" >/mnt/etc/systemd/network/20-bond0.netdev'
+        ExecStart=/usr/bin/sh -c 'echo -e "[Match]\nName=bond0\n\n[Network]\nAddress=<%= @host.ip%>/24\nGateway=<%= @host.subnet.gateway%>\n<% if @host.subnet.dns_primary.present? -%>DNS=<%= @host.subnet.dns_primary %>\n<% end -%><% if @host.subnet.dns_secondary.present? -%>DNS=<%= @host.subnet.dns_secondary %>\n<% end -%>Domains=<%= @host.domain%>\n" >/mnt/etc/systemd/network/30-bond0.network'
+        ExecStart=/usr/bin/sh -c 'echo -e "\nStage2: Running salt minion" >>/mnt/etc/issue'
+        ExecStart=/usr/bin/sh -c 'cd /tmp && wget -q --no-proxy http://ubauto/coreos/install/coreos_opt.tar.gz && tar -xzf coreos_opt.tar.gz -C /mnt'
+        ExecStartPost=/usr/bin/umount /mnt
+        ExecStartPost=/usr/bin/wget -q -O /dev/null --no-proxy --no-check-certificate <%= foreman_url('built') %>
+        ExecStartPost=/usr/sbin/reboot

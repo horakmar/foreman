@@ -1,0 +1,34 @@
+#cloud-config
+<%#
+kind: snippet
+name: coreos_cloudconfig_salt
+%>
+hostname: <%= @host.shortname%>
+<% if @host.params['ssh_authorized_keys'] -%>
+ssh_authorized_keys:
+<% @host.params['ssh_authorized_keys'].split(',').map(&:strip).each do |ssh_key| -%>
+  - "<%= ssh_key %>"
+<% end -%>
+<% end -%>
+users:
+  - name: core
+    passwd: <%= root_pass %>
+coreos:
+  units:
+  - name: saltminion.service
+    command: start
+    runtime: false
+    content: |
+      [Unit]
+      Description=The Salt Minion
+      After=network.target
+      
+      [Service]
+      Environment=LD_LIBRARY_PATH=/opt/lib
+      Type=notify
+      NotifyAccess=all
+      LimitNOFILE=8192
+      ExecStart=/opt/bin/salt-minion
+
+      [Install]
+      WantedBy=multi-user.target
